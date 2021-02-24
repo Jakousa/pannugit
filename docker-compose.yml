@@ -1,0 +1,10 @@
+version: "3.8"
+
+services:
+  redis:
+    image: redis:6.2.0-alpine
+    container_name: pannugit_redis
+    expose:
+      - 6379
+    ports:
+      - 6379:6379
