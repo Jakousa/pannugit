@@ -1,0 +1,4 @@
+configFilePath: ./pannugit.yaml
+ref: https://github.com/org/example
+storePath: /Users/jakousa/Documents/Toska/pannugit/test/org/example # TODO make sense
+watchPath: ./
