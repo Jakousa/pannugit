@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -14,6 +16,66 @@ import (
 )
 
 func main() {
+	startCommand := flag.NewFlagSet("start", flag.ExitOnError)
+	initCommand := flag.NewFlagSet("init", flag.ExitOnError)
+
+
+	pathToYaml := *flag.String("path", "", " Where in the git repository is the primary pannugit.yaml.")
+	repository := *flag.String("repository", "", " The git repository you want to pull.")
+
+	flag.Parse()
+
+	fmt.Println(startCommand.Parsed())
+	fmt.Println(initCommand.Parsed())
+
+	if len(flag.Args()) < 1 {
+		fmt.Println("start or init subcommand is required")
+		os.Exit(1)
+	}
+
+	if len(flag.Args()) > 2 {
+		fmt.Println("Too many arguments")
+		os.Exit(1)
+	}
+
+	if len(flag.Args()) == 1 {
+		subcommand := flag.Arg(1)
+		if subcommand != "start" {
+			fmt.Println("--help to help yourself")
+			os.Exit(1)
+			return
+		}
+		startFromMemory()
+		return
+	}
+
+	if len(flag.Args()) == 2 {
+		subcommand := flag.Arg(1)
+		pathArgument := flag.Arg(2)
+		if subcommand == "start" {
+			startFromRepo(pathArgument, pathToYaml)
+			return
+		}
+		if subcommand == "init" {
+			initialize(pathArgument, repository, pathToYaml)
+			return
+		}
+	}
+}
+
+func startFromMemory() {
+	fmt.Println("Start from memory")
+}
+
+func startFromRepo(pathInFilesystem string, pathToYaml string) {
+	fmt.Println("Start from Repository")
+}
+
+func initialize(pathInFilesystem string, repository string, pathToYaml string) {
+	fmt.Println("Initialize")
+}
+
+func runPocSetup() {
 	initializeRedisClient()
 	directory := "test"
 	githubRepository := "org/example"
@@ -22,11 +84,17 @@ func main() {
 	//cloneRepositoryToSubdirectory(repoPath, githubRepository)
 
 	pannugitConfigName := "pannugit.yaml"
-	config, configErr := readPannugitConfig(repoPath, pannugitConfigName)
+	pannnugitConfigPath := filepath.Join(repoPath, pannugitConfigName)
+	config, configErr := readPannugitYaml(pannnugitConfigPath)
 	CheckIfError(configErr)
 	storePannugitConfig(config)
 
-	findAllPannugitFilesFromConfig()
+	findAllServiceYamlsFromConfig()
+	dockerComposes := createDockerComposesForAllServices()
+	fmt.Println(dockerComposes)
+
+	example := dockerComposes[0]
+	runDockerComposeUp(example)
 }
 
 // Pull repo
@@ -45,9 +113,8 @@ type pannugitConf struct {
 }
 
 // Find own instructions in repo
-func readPannugitConfig(repoPath string, pannugitConfigName string) (*pannugitConf, error) {
-	configPath := filepath.Join(repoPath, pannugitConfigName)
-	yamlFile, err := ioutil.ReadFile(configPath)
+func readPannugitYaml(pathToFile string) (*pannugitConf, error) {
+	yamlFile, err := ioutil.ReadFile(pathToFile)
 	CheckIfError(err)
 
 	config := &pannugitConf{}
@@ -86,27 +153,90 @@ func getPannugitConfig() (*pannugitConf, error) {
 }
 
 // Use "pannu instructions" to find more "app instructions" (e.g. all in subdirectory)
-func findAllPannugitFilesFromConfig() {
+func findAllServiceYamlsFromConfig() []string {
 	config, err := getPannugitConfig()
 	CheckIfError(err)
 
 	path := filepath.Join(config.StorePath, config.WatchPath)
 	fmt.Println(path)
 
-	filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
+	paths := []string{}
+
+	walkErr := filepath.Walk(path, func(pathToFile string, info os.FileInfo, err error) error {
 		CheckIfError(err)
 		if strings.HasSuffix(info.Name(), ".pannugit.yaml") {
-			fmt.Println(info.Name()) // WIP, store path to file
+			paths = append(paths, pathToFile)
 		}
 		return nil
 	})
+	CheckIfError(walkErr)
+
+	return paths
 }
 
-// Construct docker-compose.yml from app instructions
+type serviceConf struct {
+	Override string `yaml:"override"`
+}
+
+func readServiceYaml(pathToFile string) (*serviceConf, error) {
+	yamlFile, err := ioutil.ReadFile(pathToFile)
+	CheckIfError(err)
+
+	config := &serviceConf{}
+	err = yaml.Unmarshal(yamlFile, config)
+	CheckIfError(err)
+
+	return config, nil
+}
+
+type dockerComposeStorage struct {
+	serviceConfPath string
+	dockerComposeOverridePath string
+	dockerComposeOverride string
+}
+
+// Construct docker-compose.ymls from app instructions
+func createDockerComposesForAllServices() []dockerComposeStorage {
+	serviceYamlPaths := findAllServiceYamlsFromConfig()
+
+	serviceDockerComposes := []dockerComposeStorage{}
+
+	for i := 0; i < len(serviceYamlPaths); i++ {
+		pathToFile := serviceYamlPaths[i]
+
+		serviceConfig, err := readServiceYaml(pathToFile)
+		CheckIfError(err)
+
+		pathToOverride := filepath.Join(filepath.Dir(pathToFile), serviceConfig.Override)
+
+		yamlFile, err := ioutil.ReadFile(pathToOverride)
+		CheckIfError(err)
+
+		dockerComposes := dockerComposeStorage{
+			serviceConfPath: pathToFile,
+			dockerComposeOverridePath: pathToOverride,
+			dockerComposeOverride: string(yamlFile),
+		}
+		serviceDockerComposes = append(serviceDockerComposes, dockerComposes)
+	}
+
+	return serviceDockerComposes
+}
+
 // Run docker-compose.yml (dco up)
+func runDockerComposeUp(storage dockerComposeStorage) {
+	overrideFilePath := storage.dockerComposeOverridePath
+	executionDir := filepath.Dir(overrideFilePath)
+	cmd := exec.Command("docker-compose", "-f", overrideFilePath, "up", "-d")
+	cmd.Dir = executionDir
+	err := cmd.Run()
+	CheckIfError(err)
+}
 
 // Check for repo updates (interval)
 // Run dco pull && dco down && dco up
+
+// POC READY
 
 // Store docker-compose.yml in redis
 // Run docker-compose.yml only if it changed (redis, dco pull dco down dco up).
@@ -114,8 +244,11 @@ func findAllPannugitFilesFromConfig() {
 // Add support for referencing other repositorios (interval)
 // Clear old images to save space
 
+// PROD READY
+
 // Store repository in key value data, (key = repo, value = latest hash)
 // If hash changes do pull, otherwise ignore
+
 func getLatestRemoteCommitHash(repoPath string) string {
 	repo, err := git.PlainOpen(repoPath)
 	CheckIfError(err)
